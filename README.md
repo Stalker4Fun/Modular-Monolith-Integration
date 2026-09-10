@@ -197,7 +197,7 @@ Open `http://localhost:5173` in your browser.
 Below is the verified Network tab evidence for both order paths captured during test execution.
 
 ### 1. Confirmed Order Evidence
-
+![Confirmed Order Network Evidence]("C:\Users\L23Y19W41\Desktop\sc1.png")
 | Parameter | Value |
 |---|---|
 | **Request URL** | `http://localhost:8080/api/orders` (or `http://localhost:5173/api/orders`) |
@@ -251,7 +251,7 @@ Below is the verified Network tab evidence for both order paths captured during 
 ---
 
 ### 3. Rejected Order Evidence (Exceeds Available Stock)
-
+![Rejected Order Network Evidence]("C:\Users\L23Y19W41\Desktop\sc2.png")
 | Parameter | Value |
 |---|---|
 | **Request URL** | `http://localhost:8080/api/orders` |
