@@ -1,0 +1,30 @@
+# Build outputs
+target/
+**/target/
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+
+# Secret credentials / Environment
+.env
+.env.*
+*.env
+application-local.properties
+application-local.yml
+
+# IDE & Editor files
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS Files
+.DS_Store
+Thumbs.db
+*.log
+
