@@ -23,10 +23,19 @@ public interface InventoryService {
     ReservationResult reserve(String productId, int quantity);
 
     /**
-     * Retrieves all inventory items, useful for populating dropdown selections.
+     * Restocks the specified quantity of a product, e.g. when an order is cancelled.
+     * Reads/updates the inventory table.
+     *
+     * @param productId product identifier
+     * @param quantity  quantity to return to stock
+     * @return ReservationResult containing updated inventory details
+     */
+    ReservationResult restock(String productId, int quantity);
+
+    /**
+     * Retrieves all inventory items, useful for populating dropdown selections and live tables.
      *
      * @return list of inventory items
      */
     List<InventoryItemDto> getAllItems();
 }
-

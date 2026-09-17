@@ -1,5 +1,6 @@
 package edu.cit.valendez.shop;
 
+import edu.cit.valendez.events.OrderItemDto;
 import edu.cit.valendez.inventory.InventoryItemDto;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -24,12 +25,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class OrderControllerTest {
 
     private MockMvc mockMvc;
-
-    @Mock
-    private OrderService orderService;
-
-    @InjectMocks
-    private OrderController orderController;
+    @Mock private OrderService orderService;
+    @InjectMocks private OrderController orderController;
 
     @BeforeEach
     void setUp() {
@@ -37,57 +34,47 @@ class OrderControllerTest {
     }
 
     @Test
-    @DisplayName("POST /api/orders returns 200 OK with CONFIRMED status")
-    void testPlaceOrderConfirmedEndpoint() throws Exception {
-        InventoryItemDto remaining = new InventoryItemDto("P100", "Wireless Mouse", 23);
-        OrderResponse response = new OrderResponse(1L, "CONFIRMED", null, remaining);
-
+    @DisplayName("POST /api/orders accepts multiple items and returns the typed order response")
+    void placeMultiItemOrder() throws Exception {
+        OrderResponse response = new OrderResponse(1L, "CONFIRMED", null,
+                List.of(new OrderItemDto("P100", 2, "CONFIRMED"), new OrderItemDto("P200", 1, "CONFIRMED")),
+                List.of(new InventoryItemDto("P100", "Wireless Mouse", 23)));
         when(orderService.placeOrder(any(OrderRequest.class))).thenReturn(response);
-
-        String jsonRequest = "{\"productId\":\"P100\",\"quantity\":2}";
 
         mockMvc.perform(post("/api/orders")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(jsonRequest))
+                        .content("{\"items\":[{\"productId\":\"P100\",\"quantity\":2},{\"productId\":\"P200\",\"quantity\":1}]}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("CONFIRMED"))
-                .andExpect(jsonPath("$.reason").doesNotExist())
-                .andExpect(jsonPath("$.inventory.productId").value("P100"))
-                .andExpect(jsonPath("$.inventory.stock").value(23));
+                .andExpect(jsonPath("$.items[1].productId").value("P200"))
+                .andExpect(jsonPath("$.inventory[0].stock").value(23));
     }
 
     @Test
-    @DisplayName("POST /api/orders returns 200 OK with REJECTED status and reason")
-    void testPlaceOrderRejectedEndpoint() throws Exception {
-        InventoryItemDto current = new InventoryItemDto("P300", "USB-C Hub", 0);
-        OrderResponse response = new OrderResponse(2L, "REJECTED", "Insufficient stock: requested 1, available 0", current);
+    @DisplayName("POST /api/orders/{orderId}/cancel returns the cancelled order")
+    void cancelOrder() throws Exception {
+        when(orderService.cancelOrder(10L)).thenReturn(new OrderResponse(10L, "CANCELLED",
+                "Order successfully cancelled and items restocked",
+                List.of(new OrderItemDto("P100", 2, "RESTOCKED")), List.of()));
 
-        when(orderService.placeOrder(any(OrderRequest.class))).thenReturn(response);
-
-        String jsonRequest = "{\"productId\":\"P300\",\"quantity\":1}";
-
-        mockMvc.perform(post("/api/orders")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(jsonRequest))
+        mockMvc.perform(post("/api/orders/10/cancel"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("REJECTED"))
-                .andExpect(jsonPath("$.reason").value("Insufficient stock: requested 1, available 0"))
-                .andExpect(jsonPath("$.inventory.productId").value("P300"))
-                .andExpect(jsonPath("$.inventory.stock").value(0));
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.items[0].outcome").value("RESTOCKED"));
     }
 
     @Test
-    @DisplayName("GET /api/orders returns order list")
-    void testGetOrdersEndpoint() throws Exception {
-        Order order = new Order("P100", 2, "CONFIRMED", null);
+    @DisplayName("GET /api/orders returns order history with line items")
+    void getOrders() throws Exception {
+        Order order = new Order("CONFIRMED", null);
         order.setOrderId(10L);
+        order.addItem(new OrderItem(null, "P100", 2));
         when(orderService.getAllOrders()).thenReturn(List.of(order));
 
         mockMvc.perform(get("/api/orders"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].orderId").value(10))
-                .andExpect(jsonPath("$[0].productId").value("P100"))
+                .andExpect(jsonPath("$[0].items[0].productId").value("P100"))
                 .andExpect(jsonPath("$[0].status").value("CONFIRMED"));
     }
 }
-

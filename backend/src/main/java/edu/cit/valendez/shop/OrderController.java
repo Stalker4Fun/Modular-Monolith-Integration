@@ -22,9 +22,14 @@ public class OrderController {
         return ResponseEntity.ok(response);
     }
 
+    @PostMapping("/{orderId}/cancel")
+    public ResponseEntity<OrderResponse> cancelOrder(@PathVariable Long orderId) {
+        OrderResponse response = orderService.cancelOrder(orderId);
+        return ResponseEntity.ok(response);
+    }
+
     @GetMapping
     public ResponseEntity<List<Order>> getOrders() {
         return ResponseEntity.ok(orderService.getAllOrders());
     }
 }
-

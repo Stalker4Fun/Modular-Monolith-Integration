@@ -1,22 +1,44 @@
 package edu.cit.valendez.shop;
 
-import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotBlank;
+import java.util.ArrayList;
+import java.util.List;
 
 public class OrderRequest {
 
-    @NotBlank(message = "Product ID cannot be blank")
-    private String productId;
+    // Multi-item order support (Lab 2)
+    private List<OrderItemRequest> items;
 
-    @Min(value = 1, message = "Quantity must be at least 1")
+    // Single-item backward compatibility (Lab 1)
+    private String productId;
     private int quantity;
 
     public OrderRequest() {
     }
 
+    public OrderRequest(List<OrderItemRequest> items) {
+        this.items = items;
+    }
+
     public OrderRequest(String productId, int quantity) {
         this.productId = productId;
         this.quantity = quantity;
+        this.items = List.of(new OrderItemRequest(productId, quantity));
+    }
+
+    public List<OrderItemRequest> getItems() {
+        if (items != null && !items.isEmpty()) {
+            return items;
+        }
+        if (productId != null && !productId.trim().isEmpty() && quantity > 0) {
+            List<OrderItemRequest> single = new ArrayList<>();
+            single.add(new OrderItemRequest(productId.trim(), quantity));
+            return single;
+        }
+        return items != null ? items : new ArrayList<>();
+    }
+
+    public void setItems(List<OrderItemRequest> items) {
+        this.items = items;
     }
 
     public String getProductId() {
@@ -35,4 +57,3 @@ public class OrderRequest {
         this.quantity = quantity;
     }
 }
-

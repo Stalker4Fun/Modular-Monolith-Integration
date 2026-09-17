@@ -1,299 +1,173 @@
-# Modular Monolith Integration with React Frontend & Supabase
+# Order / Inventory Modular Monolith
 
-A robust, enterprise-style modular monolith web application built with **Java Spring Boot**, **React (Vite)**, and **Supabase (PostgreSQL)**.
+Spring Boot and React implementation of the Lab 1 Order/Inventory modular monolith, extended with multi-item orders, cancellation/restocking, live read APIs, and in-process domain events.
 
-This project demonstrates three critical integration patterns:
-1. **Module-to-Module In-Process Integration**: Strict package boundary enforcement between the `Order` and `Inventory` modules running in the same JVM process without inter-service network overhead.
-2. **Service-to-Database Integration**: Direct Spring Data JPA integration with a shared PostgreSQL database hosted on Supabase, keeping database credentials out of the codebase via environment variables.
-3. **Client-to-Service REST Integration**: External client integration via JSON-over-HTTP REST APIs with CORS support for the React Vite frontend dev server.
-
----
-
-## 🏛️ Architecture & Package Boundary
+## Module boundaries
 
 ```
-backend/src/main/java/edu/cit/valendez/
-├── ModularMonolithApplication.java       # Root @SpringBootApplication scanning both modules
-├── config/
-│   └── CorsConfig.java                  # Enables CORS for http://localhost:5173
-│
-├── inventory/                           # === INVENTORY MODULE ===
-│   ├── InventoryItem.java               # JPA entity mapped to 'inventory' table
-│   ├── InventoryRepository.java         # Package-private Spring Data JPA repository
-│   ├── InventoryItemDto.java            # Public DTO exposed across module boundary
-│   ├── ReservationResult.java           # Public DTO for reservation status & snapshot
-│   ├── InventoryService.java            # PUBLIC interface (the module's contract)
-│   ├── InventoryServiceImpl.java        # PACKAGE-PRIVATE service (hidden implementation)
-│   ├── InventoryDataInitializer.java    # Seed runner for initial warehouse stock
-│   └── InventoryController.java         # REST endpoints (GET /api/inventory)
-│
-└── shop/                                # === ORDER MODULE ===
-    ├── Order.java                       # JPA entity mapped to 'orders' table
-    ├── OrderRepository.java             # Spring Data JPA repository
-    ├── OrderRequest.java                # DTO for incoming order requests
-    ├── OrderResponse.java               # DTO for order placement responses
-    ├── OrderService.java                # Injects InventoryService interface (constructor injection)
-    └── OrderController.java             # REST endpoints (POST /api/orders, GET /api/orders)
+edu.cit.valendez
++-- shop/          Order API, order persistence, and transaction orchestration
++-- inventory/     Inventory API and the public InventoryService contract
++-- events/        Shared domain event payloads only
+`-- notification/  Notification event listeners and notification persistence
 ```
 
-### Module Boundary Enforcement:
-- `InventoryServiceImpl` is declared with **package-private visibility** (`class InventoryServiceImpl implements InventoryService`).
-- Classes in `edu.cit.valendez.shop` (e.g. `OrderService`) **cannot import or reference** `InventoryServiceImpl` directly. The Java compiler strictly enforces this encapsulation boundary at compile time.
-- Spring IoC automatically wires the `InventoryServiceImpl` bean into `OrderService` via the public `InventoryService` interface using constructor injection.
+`InventoryServiceImpl` and `NotificationServiceImpl` are package-private. The shop module calls only the public `InventoryService` interface. The notification module imports only event payloads from `events`; it never calls either the Order or Inventory service. Neither Order nor Inventory imports the notification module.
 
----
+## API
 
-## 🛠️ Tech Stack
+### Place a multi-item order
 
-- **Backend**: Java 21+ / Java 26, Spring Boot 4.1.0, Spring Data JPA, Hibernate, HikariCP, PostgreSQL Driver, Jakarta Validation
-- **Frontend**: React 18, Vite 5, Vanilla CSS3 (modern responsive dashboard)
-- **Database**: PostgreSQL (Supabase)
-- **Testing**: JUnit 5, Mockito, Spring Test, MockMvc, H2 in PostgreSQL mode
+`POST /api/orders`
 
----
-
-## 📦 Supabase Database Setup
-
-### Step 1: Create a Supabase Project
-1. Log in to [Supabase](https://supabase.com/).
-2. Create a new project (e.g., `modular-monolith-db`).
-3. Note your database password and project connection settings.
-
-### Step 2: Execute the Database Script
-1. Navigate to the **SQL Editor** in your Supabase dashboard.
-2. Open or copy the contents of [`schema.sql`](./schema.sql) located at the root of this repository.
-3. Click **Run** to execute the script.
-
-```sql
--- 1. Create inventory table
-CREATE TABLE IF NOT EXISTS inventory (
-    product_id VARCHAR(50) PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    stock INT NOT NULL CHECK (stock >= 0)
-);
-
--- 2. Create orders table
-CREATE TABLE IF NOT EXISTS orders (
-    order_id BIGSERIAL PRIMARY KEY,
-    product_id VARCHAR(50) NOT NULL,
-    quantity INT NOT NULL CHECK (quantity > 0),
-    status VARCHAR(50) NOT NULL,
-    reason VARCHAR(255),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
--- 3. Seed initial inventory data
-INSERT INTO inventory (product_id, name, stock) VALUES
-    ('P100', 'Wireless Mouse', 25),
-    ('P200', 'Mechanical Keyboard', 10),
-    ('P300', 'USB-C Hub', 0)
-ON CONFLICT (product_id) DO UPDATE 
-SET 
-    name = EXCLUDED.name,
-    stock = EXCLUDED.stock;
+```json
+{
+  "items": [
+    { "productId": "P100", "quantity": 2 },
+    { "productId": "P200", "quantity": 3 }
+  ]
+}
 ```
 
-### Step 3: Configure Environment Variables
-Set the following environment variables in your terminal session before starting Spring Boot. **Never commit actual database passwords to Git.**
+The response contains `orderId`, `status`, `reason`, an `items` list with a per-line outcome, and a current `inventory` list. Lab 1's single-item request body (`productId`, `quantity`) remains accepted for backwards compatibility.
 
-**Windows (PowerShell):**
+Before reserving stock, `OrderService` validates every requested product, including the combined quantity for duplicate product lines. A stock failure produces a persisted `REJECTED` order and performs no reservation. If an unexpected reservation failure occurs after a reservation starts, the `@Transactional` method throws and rolls back the order, all reservations, and event-log writes together.
+
+### Cancel an order
+
+`POST /api/orders/{orderId}/cancel`
+
+Only `CONFIRMED` orders can be cancelled. Each order line is restocked in the same transaction, then the order is marked `CANCELLED`. Missing IDs return `404`; an already-cancelled (or otherwise non-confirmed) order returns `409`.
+
+### Read APIs
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/inventory` | Current stock for every product. |
+| `GET /api/orders` | Order history, statuses, reasons, and line items. |
+| `GET /api/notifications` | Persisted order, rejection, cancellation, and low-stock activity. |
+
+## Events and low-stock rule
+
+`OrderService` publishes `OrderPlacedEvent` for confirmed orders and `OrderRejectedEvent` for rejected ones through Spring's `ApplicationEventPublisher`. `InventoryServiceImpl` publishes `LowStockEvent` after a successful reservation leaves stock below the threshold of `5`. Cancellation also emits `OrderCancelledEvent`.
+
+`NotificationEventListener` uses synchronous `@EventListener` methods intentionally. No `@Async` is used: for this lab, keeping notification writes in the calling transaction makes the demonstration deterministic and ensures a failed transaction cannot leave a notification for an order that did not commit.
+
+## Supabase database setup
+
+1. Create a Supabase project and wait until its database is ready.
+2. In the Supabase dashboard, open **SQL Editor**, create a new query, paste the contents of [schema.sql](schema.sql), and run it.
+3. In **Connect**, copy the PostgreSQL connection details. Use the JDBC URL form shown below; the hostname normally contains your project reference.
+4. Create `backend/.env` from the following template, replacing only the placeholders. Keep this file local because it contains a password.
+
+```dotenv
+SUPABASE_DB_URL=jdbc:postgresql://db.<project-ref>.supabase.co:5432/postgres
+SUPABASE_DB_USERNAME=postgres
+SUPABASE_DB_PASSWORD=<your-supabase-database-password>
+```
+
+The backend loads `backend/.env` at startup. Alternatively, set the same values as environment variables:
+
 ```powershell
-$env:SUPABASE_DB_URL="jdbc:postgresql://db.<your-project-ref>.supabase.co:5432/postgres"
+$env:SUPABASE_DB_URL="jdbc:postgresql://db.<project-ref>.supabase.co:5432/postgres"
 $env:SUPABASE_DB_USERNAME="postgres"
-$env:SUPABASE_DB_PASSWORD="<your-database-password>"
+$env:SUPABASE_DB_PASSWORD="<password>"
 ```
 
-**Linux / macOS (Bash / Zsh):**
-```bash
-export SUPABASE_DB_URL="jdbc:postgresql://db.<your-project-ref>.supabase.co:5432/postgres"
-export SUPABASE_DB_USERNAME="postgres"
-export SUPABASE_DB_PASSWORD="<your-database-password>"
-```
+The script creates and seeds `inventory`, `orders`, `order_items`, and `notifications`. It intentionally drops and recreates those four lab tables, so do not run it against data you need to keep.
 
-*(Note: If no Supabase environment variables are provided, the application automatically falls back to an embedded in-memory H2 database in PostgreSQL mode, pre-seeded with the same items for local development and CI testing).*
+## Run and verify
 
----
-
-## 🚀 Running the Application
-
-### 1. Run Automated Tests
 ```powershell
 cd backend
 .\mvnw.cmd test
-```
-All 13 tests (unit tests, integration tests, and reflection-based architectural boundary tests) will execute and pass.
-
-### 2. Run Backend Server (Spring Boot)
-```powershell
-cd backend
 .\mvnw.cmd spring-boot:run
 ```
-The backend starts on `http://localhost:8080`.
 
-### 3. Run Frontend Dev Server (React + Vite)
-In a separate terminal:
+In another terminal:
+
 ```powershell
 cd frontend
 npm install
 npm run dev
 ```
-Open `http://localhost:5173` in your browser.
 
----
+Open `http://localhost:5173`. The cart submits the required multi-item JSON payload, the inventory table refreshes after orders and cancellations, low-stock rows are highlighted, and the order/notification feeds show the persisted results.
 
-## 📡 REST API Documentation
+The test suite includes unit/controller tests plus H2 integration tests for confirmed multi-item orders, rejected all-or-nothing orders, cancellation restocking, and order/low-stock notifications.
 
-### 1. Place Order
-- **Endpoint**: `POST /api/orders`
-- **Headers**: `Content-Type: application/json`, `Accept: application/json`
-- **Request Body**:
-  ```json
-  {
-    "productId": "P100",
-    "quantity": 2
-  }
-  ```
+## Network-tab evidence
 
-#### Confirmed Response (`200 OK`):
+The following HTTP evidence was recorded against a fresh seeded database (`P100=25`, `P200=10`, `P300=0`). In Chrome/Edge DevTools, filter the Network tab by `Fetch/XHR`, perform the same actions in the frontend, and retain the listed request and response entries.
+
+### 1. Confirmed multi-item order
+
+| Network field | Recorded value |
+| --- | --- |
+| Request | `POST http://localhost:8080/api/orders` |
+| Status | `200 OK` |
+| Request payload | `{"items":[{"productId":"P100","quantity":2},{"productId":"P200","quantity":6}]}` |
+| Response result | `orderId: 1`, `status: CONFIRMED`; both item outcomes are `CONFIRMED` |
+| Inventory returned | `P100: 23`, `P200: 4`, `P300: 0` |
+
 ```json
 {
   "orderId": 1,
   "status": "CONFIRMED",
   "reason": null,
-  "inventory": {
-    "productId": "P100",
-    "name": "Wireless Mouse",
-    "stock": 23
-  }
+  "items": [
+    { "productId": "P100", "quantity": 2, "outcome": "CONFIRMED" },
+    { "productId": "P200", "quantity": 6, "outcome": "CONFIRMED" }
+  ]
 }
 ```
 
-#### Rejected Response (`200 OK`):
+### 2. Rejected multi-item order with no partial reservation
+
+| Network field | Recorded value |
+| --- | --- |
+| Request | `POST http://localhost:8080/api/orders` |
+| Status | `200 OK` |
+| Request payload | `{"items":[{"productId":"P100","quantity":1},{"productId":"P300","quantity":1}]}` |
+| Response result | `orderId: 2`, `status: REJECTED` because P300 has zero stock |
+| Follow-up `GET /api/inventory` | P100 remains `23`, proving its valid line was not partially reserved |
+
 ```json
 {
-  "orderId": 2,
   "status": "REJECTED",
-  "reason": "Insufficient stock: requested 1, available 0",
-  "inventory": {
-    "productId": "P300",
-    "name": "USB-C Hub",
-    "stock": 0
-  }
+  "reason": "Insufficient stock for USB-C Hub (P300): requested 1, available 0",
+  "items": [
+    { "productId": "P100", "quantity": 1, "outcome": "REJECTED: Order rolled back due to failure on other item" },
+    { "productId": "P300", "quantity": 1, "outcome": "REJECTED: Insufficient stock for USB-C Hub (P300): requested 1, available 0" }
+  ]
 }
 ```
 
-### 2. Get Live Inventory
-- **Endpoint**: `GET /api/inventory`
-- **Response**: List of all inventory items with remaining stock.
+### 3. Cancellation and restock
 
-### 3. Get Order History
-- **Endpoint**: `GET /api/orders`
-- **Response**: Audit log of all submitted orders from the `orders` table.
+| Network field | Recorded value |
+| --- | --- |
+| Request | `POST http://localhost:8080/api/orders/1/cancel` |
+| Status | `200 OK` |
+| Response result | `status: CANCELLED`; P100 and P200 line outcomes are `RESTOCKED` |
+| Follow-up `GET /api/inventory` | P100 returns to `25`; P200 returns to `10` |
 
----
+This captures the restock after the confirmed order, while the rejected order did not need compensation because it never reserved inventory.
 
-## 🌐 Network Tab Evidence
+### 4. Notification activity feed
 
-Below is the verified Network tab evidence for both order paths captured during test execution.
+| Network field | Recorded value |
+| --- | --- |
+| Request | `GET http://localhost:8080/api/notifications` |
+| Status | `200 OK` |
+| Evidence in response | `Order O1 confirmed`, `Order O2 rejected`, and `Low-stock alert: Reorder needed for Mechanical Keyboard (P200) - only 4 units remaining` |
 
-### 1. Confirmed Order Evidence
-<img width="1919" height="997" alt="sc1" src="https://github.com/user-attachments/assets/4c1811ff-4dcc-4dc8-9f26-7918d800b670" />
+The same feed also contains the cancellation message for Order O1. These entries are persisted by the Notification module's synchronous event listeners, rather than by direct calls from OrderService.
 
-| Parameter | Value |
-|---|---|
-| **Request URL** | `http://localhost:8080/api/orders` (or `http://localhost:5173/api/orders`) |
-| **Request Method** | `POST` |
-| **Status Code** | `200 OK` |
-| **Request Headers** | `Content-Type: application/json`, `Accept: application/json` |
-| **Request Payload** | `{"productId": "P100", "quantity": 2}` |
+## Architectural reflection
 
-**Response Payload:**
-```json
-{
-  "orderId": 1,
-  "status": "CONFIRMED",
-  "reason": null,
-  "inventory": {
-    "productId": "P100",
-    "name": "Wireless Mouse",
-    "stock": 23
-  }
-}
-```
-*Result: Stock for `P100` decremented from 25 to 23 in the database, order persisted as `CONFIRMED`.*
+Multi-item ordering remains atomic here because the order orchestration and every `InventoryService.reserve()` call run inside the same Spring-managed `@Transactional` method and use one database transaction. The service validates all requested stock before reserving anything, including the total where a product appears on more than one line. If a reserve unexpectedly fails after another one succeeded, the method throws a runtime exception; Spring rolls back the order row, its line items, inventory updates, and synchronous notification writes together. This is unusually convenient because both modules share a process and a database transaction manager. Across a network, an HTTP call cannot join that local transaction. Splitting Inventory would require a saga: persist an order in a pending state, send reservation commands, track replies, and issue compensating release commands for inventory already reserved if a later reservation fails. It would also require timeouts, retries, idempotency keys, and a durable outbox so crashes do not lose commands.
 
----
+Publishing an application event means `OrderService` knows only the event contract, not the Notification service, repository, or notification implementation. Notification can add its own handler, storage format, or presentation without changing order placement. The dependency direction is therefore much looser than a direct service call. If Notification became remote, Spring in-memory events would not cross the process boundary. The producer would write an event to an outbox in the order transaction, and a relay would publish it to a broker such as RabbitMQ or Kafka. The consumer would need at-least-once delivery handling, retries and dead-letter processing, an event identifier with idempotent persistence, schema/version compatibility, and monitoring. Exactly-once end-to-end delivery is generally impractical, so duplicate-safe consumers are essential.
 
-### 2. Rejected Order Evidence (Zero Stock)
-
-| Parameter | Value |
-|---|---|
-| **Request URL** | `http://localhost:8080/api/orders` (or `http://localhost:5173/api/orders`) |
-| **Request Method** | `POST` |
-| **Status Code** | `200 OK` |
-| **Request Headers** | `Content-Type: application/json`, `Accept: application/json` |
-| **Request Payload** | `{"productId": "P300", "quantity": 1}` |
-
-**Response Payload:**
-```json
-{
-  "orderId": 2,
-  "status": "REJECTED",
-  "reason": "Insufficient stock: requested 1, available 0",
-  "inventory": {
-    "productId": "P300",
-    "name": "USB-C Hub",
-    "stock": 0
-  }
-}
-```
-*Result: Stock for `P300` remained 0, order persisted in `orders` table as `REJECTED` with reason.*
-
----
-
-### 3. Rejected Order Evidence (Exceeds Available Stock)
-<img width="1919" height="1006" alt="sc2" src="https://github.com/user-attachments/assets/f4f77dd5-09cb-4920-b7c5-b4dcfd72976d" />
-
-| Parameter | Value |
-|---|---|
-| **Request URL** | `http://localhost:8080/api/orders` |
-| **Request Method** | `POST` |
-| **Status Code** | `200 OK` |
-| **Request Payload** | `{"productId": "P200", "quantity": 50}` |
-
-**Response Payload:**
-```json
-{
-  "orderId": 3,
-  "status": "REJECTED",
-  "reason": "Insufficient stock: requested 50, available 10",
-  "inventory": {
-    "productId": "P200",
-    "name": "Mechanical Keyboard",
-    "stock": 10
-  }
-}
-```
-*Result: Stock for `P200` remained 10, order persisted in `orders` table as `REJECTED`.*
-
----
-
-## 📝 Architectural Reflection (300–500 Words)
-
-### 1. In-Process Integration vs. Separate Microservices Over a Network
-Integrating the Order and Inventory modules in-process within a modular monolith yields tremendous architectural simplicity and operational efficiency that developers often take for granted. By running in the same JVM, communication occurs through standard Java method invocations rather than network I/O. We get lightning-fast sub-millisecond execution, zero serialization/deserialization overhead, compile-time type safety, and direct in-memory object passing for free. Crucially, in-process integration allows us to leverage local database ACID transactions: reserving inventory stock and writing the order audit record can occur atomically within a single database commit. 
-
-If this boundary were split into separate microservices over HTTP or gRPC, all of these guarantees evaporate. We would need to introduce complex infrastructure to handle the fallacies of distributed computing: network latency, connection timeouts, TLS overhead, circuit breakers (e.g., Resilience4j), retries with exponential backoff, service discovery, API gateways, and distributed tracing (e.g., Micrometer/Zipkin). Furthermore, we lose atomic ACID transactions across services. We would have to implement distributed consensus or the Saga pattern (orchestrated or choreographed) alongside compensating transactions to ensure eventual consistency if an order confirmation or payment fails downstream.
-
-### 2. Why Package-Private Visibility on InventoryServiceImpl Matters
-Package-private visibility (`class InventoryServiceImpl implements InventoryService`) enforces the modular boundary at the Java compiler level. By omitting the `public` modifier, `InventoryServiceImpl` is strictly invisible outside the `edu.cit.valendez.inventory` package. The `Order` module (`edu.cit.valendez.shop`) is physically prevented from importing or directly instantiating the concrete implementation. It can interact solely through the published, public `InventoryService` interface, injected by Spring's constructor injection.
-
-If `InventoryServiceImpl` were made public, the encapsulation boundary would immediately degrade. Developers could inadvertently instantiate the class directly with `new`, bypass Spring's transaction management and proxy mechanisms, or depend on internal implementation details and helper methods not specified in the public interface. This would create tight coupling between the modules, making it impossible to refactor, replace, or extract the Inventory module in the future without breaking the Order module. Package-private visibility enforces the Dependency Inversion Principle (DIP) and ensures loose coupling by design.
-
-### 3. When to Extract Inventory into Its Own Microservice and Necessary Changes
-Inventory should be extracted into an independent microservice only when clear technical or organizational drivers demand it. Key triggers include: (1) **Asymmetric scaling requirements**, where inventory queries (read traffic from catalog browsing) outpace order placement by orders of magnitude and require independent auto-scaling or caching tiers; (2) **Team autonomy**, when separate dedicated teams manage warehouse logistics and e-commerce checkout; or (3) **Independent deployment and lifecycle cadence**, where inventory updates must deploy without redeploying the shop module.
-
-To execute this extraction, our code would require three fundamental changes:
-1. **Transport Layer Adaptation**: In `OrderService`, the direct in-process interface call would be replaced by an HTTP REST client (such as Spring's `RestClient` or `WebClient`) or gRPC stub targeting the standalone Inventory microservice URL.
-2. **Data & Schema Decoupling**: The shared database would be split into dedicated databases (`inventory_db` and `order_db`), eliminating shared tables and direct foreign keys.
-3. **Event-Driven Resilience & Saga Orchestration**: Synchronous reservation would transition to asynchronous messaging (using Apache Kafka or RabbitMQ) via the Transactional Outbox pattern, with compensating events handling stock rollbacks upon order cancellation.
+If exactly one module had to be extracted first, I would choose Notification. It is already event-driven, has no synchronous business decision in the order path, and can tolerate eventual consistency better than Inventory. Inventory is part of the order's correctness boundary, so extracting it first would immediately require the reservation saga described above. Extracting Notification would move its table and listener into a new service, replace the in-process publisher with transactional-outbox publication, and have the new service consume the same versioned event payloads from a broker. Order and Inventory code would no longer import the local event listener or share Notification's database; only the broker-facing event contract would remain shared.

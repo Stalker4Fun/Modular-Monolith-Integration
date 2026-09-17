@@ -1,94 +1,103 @@
-import React, { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
-const INITIAL_PRODUCTS = [
+const LOW_STOCK_THRESHOLD = 5;
+const FALLBACK_PRODUCTS = [
   { productId: 'P100', name: 'Wireless Mouse', stock: 25 },
   { productId: 'P200', name: 'Mechanical Keyboard', stock: 10 },
   { productId: 'P300', name: 'USB-C Hub', stock: 0 },
 ];
 
+async function getJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}`);
+  }
+  return response.json();
+}
+
 export default function App() {
-  const [products, setProducts] = useState(INITIAL_PRODUCTS);
-  const [selectedProductId, setSelectedProductId] = useState('P100');
-  const [quantity, setQuantity] = useState(1);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null);
+  const [products, setProducts] = useState(FALLBACK_PRODUCTS);
   const [orders, setOrders] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [selectedProductId, setSelectedProductId] = useState('P100');
+  const [selectedQuantity, setSelectedQuantity] = useState(1);
+  const [cart, setCart] = useState([]);
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
   const [apiConnected, setApiConnected] = useState(false);
 
-  // Fetch live inventory
-  const fetchInventory = async () => {
-    try {
-      const res = await fetch('/api/inventory');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data) && data.length > 0) {
-          setProducts(data);
-          setApiConnected(true);
-        }
-      }
-    } catch (err) {
-      console.warn('API /api/inventory not reachable yet, using initial seed data.', err);
-    }
-  };
+  const refreshDashboard = async () => {
+    const [inventoryResult, ordersResult, notificationsResult] = await Promise.allSettled([
+      getJson('/api/inventory'),
+      getJson('/api/orders'),
+      getJson('/api/notifications'),
+    ]);
 
-  // Fetch recent orders
-  const fetchOrders = async () => {
-    try {
-      const res = await fetch('/api/orders');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          setOrders(data);
-        }
-      }
-    } catch (err) {
-      // ignore if offline
+    if (inventoryResult.status === 'fulfilled') {
+      setProducts(inventoryResult.value);
+      setApiConnected(true);
+    } else {
+      setApiConnected(false);
     }
+    if (ordersResult.status === 'fulfilled') setOrders(ordersResult.value);
+    if (notificationsResult.status === 'fulfilled') setNotifications(notificationsResult.value);
   };
 
   useEffect(() => {
-    fetchInventory();
-    fetchOrders();
+    refreshDashboard();
   }, []);
 
-  // Handle Order Submission (POST /api/orders)
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!selectedProductId) return;
+  const addToCart = () => {
+    const quantity = Number.parseInt(selectedQuantity, 10);
+    if (!selectedProductId || !Number.isInteger(quantity) || quantity < 1) return;
 
+    setCart((currentCart) => {
+      const existingLine = currentCart.find((line) => line.productId === selectedProductId);
+      if (existingLine) {
+        return currentCart.map((line) => line.productId === selectedProductId
+          ? { ...line, quantity: line.quantity + quantity }
+          : line);
+      }
+      return [...currentCart, { productId: selectedProductId, quantity }];
+    });
+    setSelectedQuantity(1);
+  };
+
+  const changeCartQuantity = (productId, value) => {
+    const quantity = Number.parseInt(value, 10);
+    if (!Number.isInteger(quantity) || quantity < 1) return;
+    setCart((currentCart) => currentCart.map((line) => line.productId === productId
+      ? { ...line, quantity }
+      : line));
+  };
+
+  const removeCartLine = (productId) => {
+    setCart((currentCart) => currentCart.filter((line) => line.productId !== productId));
+  };
+
+  const submitOrder = async (event) => {
+    event.preventDefault();
+    if (!cart.length) return;
+
+    const payload = { items: cart };
     setLoading(true);
     setResult(null);
-
-    const payload = {
-      productId: selectedProductId,
-      quantity: parseInt(quantity, 10) || 1,
-    };
-
     try {
-      const res = await fetch('/api/orders', {
+      const response = await fetch('/api/orders', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify(payload),
       });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || data.error || 'Order request failed');
 
-      const data = await res.json();
-      setResult({
-        ...data,
-        timestamp: new Date().toLocaleTimeString(),
-        requestPayload: payload,
-      });
-
-      // Refresh inventory and order history
-      await fetchInventory();
-      await fetchOrders();
-    } catch (err) {
+      setResult({ ...data, timestamp: new Date().toLocaleTimeString(), requestPayload: payload });
+      if (data.status === 'CONFIRMED') setCart([]);
+      await refreshDashboard();
+    } catch (error) {
       setResult({
         status: 'ERROR',
-        reason: err.message || 'Network error communicating with backend',
-        inventory: null,
+        reason: error.message || 'Network error communicating with the backend',
         timestamp: new Date().toLocaleTimeString(),
         requestPayload: payload,
       });
@@ -97,207 +106,109 @@ export default function App() {
     }
   };
 
-  // Quick test triggers
-  const handleQuickTest = (prodId, qty) => {
-    setSelectedProductId(prodId);
-    setQuantity(qty);
+  const cancelOrder = async (orderId) => {
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/orders/${orderId}/cancel`, { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || data.error || 'Cancellation failed');
+      setResult({ ...data, timestamp: new Date().toLocaleTimeString() });
+      await refreshDashboard();
+    } catch (error) {
+      setResult({ status: 'ERROR', reason: error.message || 'Cancellation failed', timestamp: new Date().toLocaleTimeString() });
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const selectedProduct = products.find((p) => p.productId === selectedProductId);
+  const productFor = (productId) => products.find((product) => product.productId === productId);
+  const statusClass = result?.status?.toLowerCase() || 'error';
 
   return (
     <div className="container">
       <header className="app-header">
-        <div className="badge-wrapper">
-          <span className="badge module-badge">Modular Monolith</span>
-          <span className="badge inprocess-badge">In-Process Integration</span>
-          <span className={`badge status-badge ${apiConnected ? 'connected' : 'offline'}`}>
-            {apiConnected ? '● Backend Connected' : '○ Standby / Offline'}
+        <div className="badge-row">
+          <span className="badge">Modular Monolith</span>
+          <span className="badge event-badge">Synchronous Domain Events</span>
+          <span className={`connection ${apiConnected ? 'online' : 'offline'}`}>
+            {apiConnected ? 'Backend connected' : 'Backend unavailable'}
           </span>
         </div>
-        <h1>Modular Monolith Store</h1>
-        <p className="subtitle">
-          In-process Integration between <strong>Order</strong> (<code>edu.cit.valendez.shop</code>) and{' '}
-          <strong>Inventory</strong> (<code>edu.cit.valendez.inventory</code>) via Supabase PostgreSQL
-        </p>
+        <h1>Order and Inventory Dashboard</h1>
+        <p>Multi-item orders, atomic inventory reservations, cancellation restocks, and notification events.</p>
       </header>
 
-      {/* Live Inventory Overview Cards */}
-      <section className="card-section">
-        <h2>Live Warehouse Inventory</h2>
-        <div className="inventory-grid">
-          {products.map((item) => {
-            const isOutOfStock = item.stock <= 0;
-            return (
-              <div
-                key={item.productId}
-                className={`inventory-card ${isOutOfStock ? 'out-of-stock' : ''} ${
-                  selectedProductId === item.productId ? 'selected' : ''
-                }`}
-                onClick={() => setSelectedProductId(item.productId)}
-              >
-                <div className="card-header">
-                  <span className="product-id">{item.productId}</span>
-                  <span className={`stock-pill ${isOutOfStock ? 'pill-empty' : 'pill-available'}`}>
-                    {isOutOfStock ? 'Out of Stock' : `${item.stock} in stock`}
-                  </span>
-                </div>
-                <h3 className="product-name">{item.name}</h3>
-                <div className="card-footer">
-                  <span>Available: <strong>{item.stock} units</strong></span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
+      <main className="dashboard-grid">
+        <section className="panel order-panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Build an order</h2>
+              <p>Add one or more products to a cart, then submit them as one atomic order.</p>
+            </div>
+          </div>
 
-      {/* Order Placement Form */}
-      <main className="main-content">
-        <section className="form-section">
-          <h2>Place a New Order</h2>
-          <form onSubmit={handleSubmit} className="order-form">
-            <div className="form-group">
-              <label htmlFor="product-select">Select Product</label>
-              <select
-                id="product-select"
-                value={selectedProductId}
-                onChange={(e) => setSelectedProductId(e.target.value)}
-                disabled={loading}
-              >
-                {products.map((p) => (
-                  <option key={p.productId} value={p.productId}>
-                    {p.productId} - {p.name} ({p.stock} in stock)
+          <form onSubmit={submitOrder}>
+            <div className="product-picker">
+              <label htmlFor="product-select">Product</label>
+              <select id="product-select" value={selectedProductId}
+                onChange={(event) => setSelectedProductId(event.target.value)} disabled={loading}>
+                {products.map((product) => (
+                  <option key={product.productId} value={product.productId}>
+                    {product.productId} — {product.name} ({product.stock} in stock)
                   </option>
                 ))}
               </select>
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="quantity-input">Quantity</label>
-              <input
-                id="quantity-input"
-                type="number"
-                min="1"
-                max="999"
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-                disabled={loading}
-                required
-              />
-              {selectedProduct && selectedProduct.stock > 0 && (
-                <small className="helper-text">
-                  Max available: {selectedProduct.stock} units
-                </small>
-              )}
-            </div>
-
-            <div className="quick-test-bar">
-              <span className="quick-test-label">Quick Test Scenarios:</span>
-              <button
-                type="button"
-                className="btn-pill"
-                onClick={() => handleQuickTest('P100', 2)}
-              >
-                Confirmed: P100 (qty 2)
-              </button>
-              <button
-                type="button"
-                className="btn-pill"
-                onClick={() => handleQuickTest('P300', 1)}
-              >
-                Rejected: P300 (qty 1 - Zero Stock)
-              </button>
-              <button
-                type="button"
-                className="btn-pill"
-                onClick={() => handleQuickTest('P200', 50)}
-              >
-                Rejected: P200 (qty 50 - Exceeds Stock)
+              <label htmlFor="product-quantity">Quantity</label>
+              <input id="product-quantity" type="number" min="1" max="999" value={selectedQuantity}
+                onChange={(event) => setSelectedQuantity(event.target.value)} disabled={loading} />
+              <button type="button" className="button secondary" onClick={addToCart} disabled={loading}>
+                Add to cart
               </button>
             </div>
 
-            <button
-              type="submit"
-              className="btn btn-primary"
-              disabled={loading || !selectedProductId || quantity < 1}
-            >
-              {loading ? 'Processing Order...' : 'Place Order (POST /api/orders)'}
+            <div className="cart">
+              <div className="cart-title"><h3>Cart</h3><span>{cart.length} line{cart.length === 1 ? '' : 's'}</span></div>
+              {!cart.length && <p className="empty-copy">Your cart is empty.</p>}
+              {cart.map((line) => {
+                const product = productFor(line.productId);
+                return (
+                  <div className="cart-line" key={line.productId}>
+                    <div><strong>{line.productId}</strong><span>{product?.name || 'Unknown product'}</span></div>
+                    <input aria-label={`${line.productId} quantity`} type="number" min="1" max="999"
+                      value={line.quantity} disabled={loading}
+                      onChange={(event) => changeCartQuantity(line.productId, event.target.value)} />
+                    <button type="button" className="icon-button" aria-label={`Remove ${line.productId}`}
+                      onClick={() => removeCartLine(line.productId)} disabled={loading}>Remove</button>
+                  </div>
+                );
+              })}
+            </div>
+
+            <button type="submit" className="button primary" disabled={loading || !cart.length}>
+              {loading ? 'Processing…' : 'Submit multi-item order'}
             </button>
           </form>
         </section>
 
-        {/* Result Area */}
-        <section className="result-section">
-          <h2>Order Result Area</h2>
-          {!result && !loading && (
-            <div className="result-placeholder">
-              <p>Submit an order above to view the in-process integration result.</p>
-              <p className="placeholder-sub">
-                Expect <code>CONFIRMED</code> when stock is available or <code>REJECTED</code> when requested quantity exceeds stock.
-              </p>
-            </div>
-          )}
-
-          {loading && (
-            <div className="loading-spinner-box">
-              <div className="spinner"></div>
-              <p>Calling in-process InventoryService &amp; persisting order...</p>
-            </div>
-          )}
-
-          {result && !loading && (
-            <div
-              className={`result-box ${
-                result.status === 'CONFIRMED'
-                  ? 'box-confirmed'
-                  : result.status === 'REJECTED'
-                  ? 'box-rejected'
-                  : 'box-error'
-              }`}
-            >
-              <div className="result-status-header">
-                <span className={`status-badge-lg ${result.status.toLowerCase()}`}>
-                  {result.status === 'CONFIRMED' ? '✓ CONFIRMED' : '✕ REJECTED'}
-                </span>
-                <span className="timestamp">{result.timestamp}</span>
+        <section className="panel result-panel">
+          <h2>Latest result</h2>
+          {!result && <p className="empty-copy">Order and cancellation responses will appear here.</p>}
+          {result && (
+            <div className={`result ${statusClass}`}>
+              <div className="result-title">
+                <strong>{result.status}</strong><span>{result.timestamp}</span>
               </div>
-
-              {result.orderId && (
-                <p className="order-id-line">
-                  Order ID: <strong>#{result.orderId}</strong>
-                </p>
+              {result.orderId && <p>Order #{result.orderId}</p>}
+              {result.reason && <p className="reason">{result.reason}</p>}
+              {result.items?.length > 0 && (
+                <ul className="result-items">
+                  {result.items.map((item, index) => (
+                    <li key={`${item.productId}-${index}`}><code>{item.productId}</code> × {item.quantity}: {item.outcome}</li>
+                  ))}
+                </ul>
               )}
-
-              {result.reason && (
-                <div className="rejection-reason">
-                  <strong>Rejection Reason:</strong> {result.reason}
-                </div>
-              )}
-
-              {result.status === 'CONFIRMED' && (
-                <div className="confirmation-details">
-                  <p>Order successfully confirmed and recorded to the <code>orders</code> table!</p>
-                </div>
-              )}
-
-              {result.inventory && (
-                <div className="inventory-snapshot">
-                  <h4>Inventory State:</h4>
-                  <ul>
-                    <li>Product: <strong>{result.inventory.name} ({result.inventory.productId})</strong></li>
-                    <li>
-                      Remaining Stock:{' '}
-                      <strong className={result.inventory.stock <= 0 ? 'text-danger' : 'text-success'}>
-                        {result.inventory.stock} units
-                      </strong>
-                    </li>
-                  </ul>
-                </div>
-              )}
-
-              <details className="raw-response-details" open>
-                <summary>Raw API Response Payload (REST Contract)</summary>
+              <details>
+                <summary>Response payload</summary>
                 <pre>{JSON.stringify(result, null, 2)}</pre>
               </details>
             </div>
@@ -305,49 +216,55 @@ export default function App() {
         </section>
       </main>
 
-      {/* Order Audit History Table */}
-      {orders.length > 0 && (
-        <section className="history-section">
-          <h2>Order Audit Log (Database: <code>orders</code> table)</h2>
-          <div className="table-responsive">
-            <table className="orders-table">
-              <thead>
-                <tr>
-                  <th>Order ID</th>
-                  <th>Product ID</th>
-                  <th>Quantity</th>
-                  <th>Status</th>
-                  <th>Reason</th>
-                  <th>Created At</th>
-                </tr>
-              </thead>
-              <tbody>
-                {orders.map((o) => (
-                  <tr key={o.orderId}>
-                    <td>#{o.orderId}</td>
-                    <td><code>{o.productId}</code></td>
-                    <td>{o.quantity}</td>
-                    <td>
-                      <span className={`badge-pill ${o.status.toLowerCase()}`}>
-                        {o.status}
-                      </span>
-                    </td>
-                    <td>{o.reason || '—'}</td>
-                    <td>{new Date(o.createdAt).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <section className="panel inventory-panel">
+        <div className="panel-heading">
+          <div><h2>Live inventory</h2><p>Refreshes after each order and cancellation.</p></div>
+          <button type="button" className="button secondary compact" onClick={refreshDashboard} disabled={loading}>Refresh</button>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Product</th><th>Name</th><th>Stock</th><th>State</th></tr></thead>
+            <tbody>
+              {products.map((product) => {
+                const state = product.stock <= 0 ? 'out' : product.stock < LOW_STOCK_THRESHOLD ? 'low' : 'available';
+                return <tr key={product.productId} className={state === 'low' ? 'low-stock' : state === 'out' ? 'out-stock' : ''}>
+                  <td><code>{product.productId}</code></td><td>{product.name}</td><td>{product.stock}</td>
+                  <td><span className={`stock-state ${state}`}>{state === 'out' ? 'Out of stock' : state === 'low' ? 'Reorder needed' : 'Available'}</span></td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <div className="feed-grid">
+        <section className="panel">
+          <h2>Order history</h2>
+          {!orders.length && <p className="empty-copy">No orders have been submitted.</p>}
+          <div className="order-list">
+            {orders.map((order) => (
+              <article className="order-card" key={order.orderId}>
+                <div className="order-card-header"><strong>Order #{order.orderId}</strong><span className={`status ${order.status.toLowerCase()}`}>{order.status}</span></div>
+                <ul>{(order.items || []).map((item) => <li key={item.itemId || item.productId}><code>{item.productId}</code> × {item.quantity}</li>)}</ul>
+                {order.reason && <p className="reason">{order.reason}</p>}
+                <div className="order-card-footer"><span>{order.createdAt ? new Date(order.createdAt).toLocaleString() : ''}</span>
+                  {order.status === 'CONFIRMED' && <button type="button" className="button danger compact" onClick={() => cancelOrder(order.orderId)} disabled={loading}>Cancel &amp; restock</button>}
+                </div>
+              </article>
+            ))}
           </div>
         </section>
-      )}
 
-      <footer className="app-footer">
-        <p>
-          Modular Monolith Integration Lab &bull; Package: <code>edu.cit.valendez</code> &bull; Student: Denzel Valendez
-        </p>
-      </footer>
+        <section className="panel">
+          <h2>Notification activity</h2>
+          {!notifications.length && <p className="empty-copy">Order and low-stock events will be logged here.</p>}
+          <ol className="notification-list">
+            {notifications.map((notification) => <li key={notification.notificationId}>
+              <p>{notification.message}</p><time>{notification.createdAt ? new Date(notification.createdAt).toLocaleString() : ''}</time>
+            </li>)}
+          </ol>
+        </section>
+      </div>
     </div>
   );
 }
-
