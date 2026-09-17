@@ -101,6 +101,7 @@ The test suite includes unit/controller tests plus H2 integration tests for conf
 The following HTTP evidence was recorded against a fresh seeded database (`P100=25`, `P200=10`, `P300=0`). In Chrome/Edge DevTools, filter the Network tab by `Fetch/XHR`, perform the same actions in the frontend, and retain the listed request and response entries.
 
 ### 1. Confirmed multi-item order
+<img width="1915" height="1039" alt="Confirmed_Multi" src="https://github.com/user-attachments/assets/28b40cfc-ef2b-404a-a96f-091cf2728499" />
 
 | Network field | Recorded value |
 | --- | --- |
@@ -123,6 +124,7 @@ The following HTTP evidence was recorded against a fresh seeded database (`P100=
 ```
 
 ### 2. Rejected multi-item order with no partial reservation
+<img width="1919" height="991" alt="Rejected_Rollback" src="https://github.com/user-attachments/assets/236ceb68-bd43-488e-85c3-f3de41d6278e" />
 
 | Network field | Recorded value |
 | --- | --- |
@@ -144,6 +146,7 @@ The following HTTP evidence was recorded against a fresh seeded database (`P100=
 ```
 
 ### 3. Cancellation and restock
+<img width="1915" height="991" alt="Cancel_Restock" src="https://github.com/user-attachments/assets/45cc1092-1204-4043-a172-2c0c8c0bf367" />
 
 | Network field | Recorded value |
 | --- | --- |
@@ -155,6 +158,7 @@ The following HTTP evidence was recorded against a fresh seeded database (`P100=
 This captures the restock after the confirmed order, while the rejected order did not need compensation because it never reserved inventory.
 
 ### 4. Notification activity feed
+<img width="1906" height="983" alt="Notification_Feed" src="https://github.com/user-attachments/assets/6de4cb89-5f24-40d4-bdb3-c733e955a7de" />
 
 | Network field | Recorded value |
 | --- | --- |
