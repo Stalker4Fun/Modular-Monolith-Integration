@@ -17,6 +17,7 @@ export default function App() {
   const [products, setProducts] = useState(FALLBACK_PRODUCTS);
   const [orders, setOrders] = useState([]);
   const [notifications, setNotifications] = useState([]);
+  const [supplierOrders, setSupplierOrders] = useState([]);
   const [selectedProductId, setSelectedProductId] = useState('P100');
   const [selectedQuantity, setSelectedQuantity] = useState(1);
   const [cart, setCart] = useState([]);
@@ -25,10 +26,11 @@ export default function App() {
   const [apiConnected, setApiConnected] = useState(false);
 
   const refreshDashboard = async () => {
-    const [inventoryResult, ordersResult, notificationsResult] = await Promise.allSettled([
+    const [inventoryResult, ordersResult, notificationsResult, supplierResult] = await Promise.allSettled([
       getJson('/api/inventory'),
       getJson('/api/orders'),
       getJson('/api/notifications'),
+      getJson('/api/supplier/orders'),
     ]);
 
     if (inventoryResult.status === 'fulfilled') {
@@ -39,6 +41,7 @@ export default function App() {
     }
     if (ordersResult.status === 'fulfilled') setOrders(ordersResult.value);
     if (notificationsResult.status === 'fulfilled') setNotifications(notificationsResult.value);
+    if (supplierResult.status === 'fulfilled') setSupplierOrders(supplierResult.value);
   };
 
   useEffect(() => {
@@ -119,6 +122,30 @@ export default function App() {
     }
   };
 
+  const syncSupplierOrders = async () => {
+    setLoading(true);
+    try {
+      await fetch('/api/supplier/sync', { method: 'POST' });
+      await refreshDashboard();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const triggerManualReorder = async (productId) => {
+    setLoading(true);
+    try {
+      await fetch(`/api/supplier/reorder/${productId}`, { method: 'POST' });
+      await refreshDashboard();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const productFor = (productId) => products.find((product) => product.productId === productId);
   const statusClass = result?.status?.toLowerCase() || 'error';
   const totalUnits = products.reduce((total, product) => total + product.stock, 0);
@@ -131,7 +158,7 @@ export default function App() {
         <div className="header-top">
           <div className="badge-row">
             <span className="badge">Modular Monolith</span>
-            <span className="badge event-badge">Synchronous Domain Events</span>
+            <span className="badge event-badge">LegacySupply Anti-Corruption Layer</span>
           </div>
           <span className={`connection ${apiConnected ? 'online' : 'offline'}`}>
             <span className="connection-dot" />{apiConnected ? 'Backend connected' : 'Backend unavailable'}
@@ -140,14 +167,14 @@ export default function App() {
         <div className="hero-layout">
           <div className="hero-copy">
             <span className="eyebrow">Operations workspace</span>
-            <h1>Order and Inventory Dashboard</h1>
-            <p>Multi-item orders, atomic inventory reservations, cancellation restocks, and notification events.</p>
+            <h1>Order, Inventory & Supplier Dashboard</h1>
+            <p>Multi-item orders, atomic inventory reservations, cancellation restocks, and LegacySupply ACL integration.</p>
           </div>
           <div className="hero-stats" aria-label="Live dashboard summary">
             <div><strong>{products.length}</strong><span>Products</span></div>
             <div><strong>{totalUnits}</strong><span>Units in stock</span></div>
             <div className={lowStockProducts ? 'attention-stat' : ''}><strong>{lowStockProducts}</strong><span>Need reorder</span></div>
-            <div><strong>{confirmedOrders}</strong><span>Open orders</span></div>
+            <div><strong>{supplierOrders.length}</strong><span>Supplier POs</span></div>
           </div>
         </div>
       </header>
@@ -229,18 +256,23 @@ export default function App() {
 
       <section className="panel inventory-panel">
         <div className="panel-heading">
-          <div><span className="section-kicker">Warehouse snapshot</span><h2>Live inventory</h2><p>Refreshes after each order and cancellation.</p></div>
+          <div><span className="section-kicker">Warehouse snapshot</span><h2>Live inventory</h2><p>Refreshes after each order, cancellation, and supplier delivery.</p></div>
           <button type="button" className="button secondary compact" onClick={refreshDashboard} disabled={loading}>Refresh</button>
         </div>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Product</th><th>Name</th><th>Stock</th><th>State</th></tr></thead>
+            <thead><tr><th>Product</th><th>Name</th><th>Stock</th><th>State</th><th>Action</th></tr></thead>
             <tbody>
               {products.map((product) => {
                 const state = product.stock <= 0 ? 'out' : product.stock < LOW_STOCK_THRESHOLD ? 'low' : 'available';
                 return <tr key={product.productId} className={state === 'low' ? 'low-stock' : state === 'out' ? 'out-stock' : ''}>
                   <td><code>{product.productId}</code></td><td>{product.name}</td><td className="stock-number">{product.stock}</td>
                   <td><span className={`stock-state ${state}`}>{state === 'out' ? 'Out of stock' : state === 'low' ? 'Reorder needed' : 'Available'}</span></td>
+                  <td>
+                    <button type="button" className="button secondary compact" onClick={() => triggerManualReorder(product.productId)} disabled={loading}>
+                      Reorder with Supplier
+                    </button>
+                  </td>
                 </tr>;
               })}
             </tbody>
@@ -248,7 +280,53 @@ export default function App() {
         </div>
       </section>
 
-      <div className="feed-grid">
+      <section className="panel supplier-panel" style={{ marginTop: '24px' }}>
+        <div className="panel-heading">
+          <div>
+            <span className="section-kicker">Anti-Corruption Layer (ACL)</span>
+            <h2>LegacySupply Purchase Orders</h2>
+            <p>Track external replenishment purchase orders, XML transmissions, and delivery restocks.</p>
+          </div>
+          <button type="button" className="button secondary compact" onClick={syncSupplierOrders} disabled={loading}>Sync Status</button>
+        </div>
+        <div className="table-wrap">
+          {!supplierOrders.length && <p className="empty-copy">No supplier orders placed yet. Reorders trigger automatically when stock falls below 5.</p>}
+          {supplierOrders.length > 0 && (
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Product</th>
+                  <th>PO Number</th>
+                  <th>Buyer Ref</th>
+                  <th>Supplier SKU</th>
+                  <th>Cases / Units</th>
+                  <th>Status</th>
+                  <th>Retries</th>
+                  <th>Details / Error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {supplierOrders.map((so) => (
+                  <tr key={so.id}>
+                    <td><code>#{so.id}</code></td>
+                    <td><code>{so.productId}</code></td>
+                    <td><code>{so.poNumber || 'PENDING'}</code></td>
+                    <td><small>{so.buyerRef}</small></td>
+                    <td><code>{so.supplierSku}</code></td>
+                    <td>{so.cases} cs / {so.units} units</td>
+                    <td><span className={`status ${so.status?.toLowerCase()}`}>{so.status}</span></td>
+                    <td>{so.retryCount}</td>
+                    <td><small>{so.failureReason || '—'}</small></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
+
+      <div className="feed-grid" style={{ marginTop: '24px' }}>
         <section className="panel">
           <div className="feed-heading"><div><span className="section-kicker">Audit trail</span><h2>Order history</h2></div><span className="count-chip">{orders.length}</span></div>
           {!orders.length && <p className="empty-copy">No orders have been submitted.</p>}

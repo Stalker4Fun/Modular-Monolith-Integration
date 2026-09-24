@@ -65,5 +65,16 @@ class NotificationEventListener {
         log.warn("[Notification] {}", msg);
         notificationRepository.save(new Notification(msg));
     }
+
+    @EventListener
+    @Transactional
+    public void onSupplierOrderDelivered(edu.cit.valendez.events.SupplierOrderDeliveredEvent event) {
+        String msg = String.format("Supplier delivery received: Restocked %d units of product %s (PO: %s)",
+                event.getQuantity(),
+                event.getProductId(),
+                event.getPoNumber());
+        log.info("[Notification] {}", msg);
+        notificationRepository.save(new Notification(msg));
+    }
 }
 

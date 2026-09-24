@@ -5,6 +5,7 @@
 
 BEGIN;
 
+DROP TABLE IF EXISTS supplier_orders;
 DROP TABLE IF EXISTS notifications;
 DROP TABLE IF EXISTS order_items;
 DROP TABLE IF EXISTS orders;
@@ -43,9 +44,29 @@ CREATE TABLE notifications (
 
 CREATE INDEX idx_notifications_created_at ON notifications(created_at DESC);
 
+CREATE TABLE supplier_orders (
+    id BIGSERIAL PRIMARY KEY,
+    product_id VARCHAR(50) NOT NULL,
+    buyer_ref VARCHAR(100) NOT NULL,
+    request_id VARCHAR(100) NOT NULL,
+    po_number VARCHAR(100),
+    supplier_sku VARCHAR(100) NOT NULL,
+    cases INTEGER NOT NULL CHECK (cases > 0),
+    units INTEGER NOT NULL CHECK (units > 0),
+    status VARCHAR(30) NOT NULL,
+    failure_reason VARCHAR(500),
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_supplier_orders_status ON supplier_orders(status);
+CREATE INDEX idx_supplier_orders_buyer_ref ON supplier_orders(buyer_ref);
+
 INSERT INTO inventory (product_id, name, stock) VALUES
     ('P100', 'Wireless Mouse', 25),
     ('P200', 'Mechanical Keyboard', 10),
     ('P300', 'USB-C Hub', 0);
 
 COMMIT;
+
