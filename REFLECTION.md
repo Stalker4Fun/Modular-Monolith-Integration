@@ -1,64 +1,41 @@
 # Lab 3 Reflection — LegacySupply Integration & ACL
 
-**Student ID**: `21-3360-213`  
-**API Key**: `[Configured in .env - Redacted for Security]`  
-**Verification Date**: September 24, 2026  
+**Student ID**: `21-3360-213`
+**API key**: configured locally through `LS_API_KEY` and not committed
+**Reflection date**: September 26, 2026
 
 ---
 
-## Reflection Questions (Self-Check Verified)
+## Question 1
 
-### Question 1: PO-100050 (BuyerRef "RO-P300-01") ended with StatusCode 90, which is not in the documentation. How did you work out what it means, and what does your system now do with the stock that will never arrive?
+### LegacySupply holds more than one order for BuyerRef `RO-1`: `PO-100230` (11:59:14), `PO-100254` (13:37:53), and `PO-100263` (18:19:25). Reconstruct the sequence of events that produced the duplicate, and describe the change you made (or would make) so it cannot happen again.
 
-**Response:**
-We identified `StatusCode 90` by inspecting live HTTP tracking responses returned from `GET /purchase-orders/PO-100050`. The XML returned `<PurchaseOrderStatus><PoNumber>PO-100050</PoNumber><StatusCode>90</StatusCode>...</PurchaseOrderStatus>`. Because the documentation only defines standard progression codes 10 (Accepted), 20 (Picking), 30 (Shipped), and 40 (Delivered), `StatusCode 90` represents a terminal supplier cancellation or unfulfillable order event.
+`BuyerRef` was originally derived from the local supplier-order primary key: after saving a new local row, the adapter changed its reference to `RO-<local id>`. That reference is not the idempotency key. It is only a business label that LegacySupply stores, and the interface manual explicitly says LegacySupply does not check it for uniqueness.
 
-Our Anti-Corruption Layer handles this in `SupplierOrderStatus.java` by mapping code `90` to the domain status `CANCELLED`. When an order transitions to `CANCELLED`:
-1. The background scheduler (`SupplierOrderScheduler`) stops polling LegacySupply for that order, avoiding wasteful network calls.
-2. The ACL **suppresses** publishing `SupplierOrderDeliveredEvent`, ensuring that non-existent stock is never added to the inventory database.
-3. The failed replenishment leaves remaining stock below the threshold (5), enabling subsequent low-stock triggers or manual operator re-orders via `SupplierGateway.reorderProduct(...)` to request replenishment.
+The three remote POs show that the local sequence was restarted or a fresh local database was used more than once, so each fresh store assigned its first supplier-order row ID `1` and the adapter reused `RO-1`. Each submission also had a different generated `X-Request-Id`; otherwise LegacySupply would have returned the previous acknowledgement as an idempotent replay instead of creating another PO. The application could also emit repeated low-stock events while stock remained below the threshold, which made repeated replenishment attempts possible in the earlier implementation.
 
----
+I changed the adapter so `reorderProduct` first looks for an existing open order for the same product in `PENDING`, `ACCEPTED`, `PICKING`, or `SHIPPED` status. If one exists, it returns that order and sends no second POST to LegacySupply. This prevents repeated low-stock events or use of the UI's reorder action from creating another active replenishment order for that product.
 
-### Question 2: LegacySupply never tells you how long a session lasts. Measure your session lifetime from your own logs, state the number, and explain how your adapter decides when to sign in again.
-
-**Response:**
-LegacySupply session tokens returned by `POST /auth/token` do not contain an expiration timestamp or TTL header in `<AuthResponse>`. In live server testing and log observations, session tokens remain valid for short execution windows but expire on server-driven schedules.
-
-Our Anti-Corruption Layer adapter (`LegacySupplySessionManager` and `LegacySupplyClient`) handles session expiration through a **dynamic reactive re-authentication policy**:
-1. `LegacySupplySessionManager` caches the active `SessionToken` in memory upon successful `POST /auth/token` login.
-2. All outgoing HTTP requests include the `X-LS-Session: <token>` header.
-3. If LegacySupply returns `HTTP 401 Unauthorized` or error codes `E-AUTH-01`, `E-AUTH-02`, `E-AUTH-03`, or `E-AUTH-07`, `LegacySupplyClient` catches the error, calls `sessionManager.invalidateSession()`, acquires a fresh session token via `POST /auth/token`, and automatically retries the failed API call once.
-
-This guarantees seamless recovery regardless of server session timeout intervals without making unnecessary authentication requests before every API invocation.
+For a fully restart-safe reference, I would also generate and persist a non-recycled buyer reference such as `RO-<UUID>` when the local order is first created, and add a database uniqueness constraint for `buyer_ref`. The UUID still fits LegacySupply's 40-character BuyerRef limit, unlike a reference based only on a resettable local numeric ID.
 
 ---
 
-### Question 3: The catalog reports PackSize and orders report Uom "CS". Using one of your own orders, show the arithmetic from "units your Inventory needed" to the Qty you sent, and to the units your Inventory received on delivery.
+## Question 2
 
-**Response:**
-Using actual empirical evidence from our live order **`PO-100048`** placed with LegacySupply for product `P100` (Wireless Mouse):
+### At 11:30:39 your request for BuyerRef `RO-OUTC-V2-2` (X-Request-Id `outcatch-v2-2-113038`) received a 503, but LegacySupply had already created `PO-100226`. Walk through exactly what your adapter did next, and explain why that did or did not result in a second order.
 
-1. **Units Inventory Needed**: Target reorder quantity = `10 units`.
-2. **Catalog Specifications**: `GET /catalog` for `P100` maps to supplier SKU `ZTY-3082` with `PackSize = 6` (6 units per case).
-3. **Cases Calculation (Qty Sent)**:
-   $$\text{Cases} = \left\lceil \frac{\text{Target Units}}{\text{PackSize}} \right\rceil = \left\lceil \frac{10}{6} \right\rceil = \left\lceil 1.666 \right\rceil = 2 \text{ cases}$$
-   The ACL transmitted `<PurchaseOrder><SupplierSku>ZTY-3082</SupplierSku><Qty>2</Qty><BuyerRef>RO-P100-01</BuyerRef></PurchaseOrder>`. LegacySupply acknowledged `PO-100048` with `Qty = 2` and `Uom = CS`.
-4. **Units Received on Delivery**:
-   $$\text{Units Restocked} = \text{Cases} \times \text{PackSize} = 2 \times 6 = 12 \text{ units}$$
-   When the order reaches status `40` (`DELIVERED`), the ACL publishes `SupplierOrderDeliveredEvent(productId="P100", quantity=12, poNumber="PO-100048")`. `InventoryEventListener` receives the event and executes `inventoryService.restock("P100", 12)`, adding 12 units to live inventory stock.
+This is the ambiguous-response failure case: the supplier accepted and committed the purchase order, but the client received a `503` instead of the acknowledgement. The adapter could therefore not safely assume that no order existed.
+
+`LegacySupplyClient` translated the non-success response into a `LegacySupplyException`. `SupplierGatewayImpl` kept the local supplier order in `PENDING`, incremented its retry count, saved the failure reason, and scheduled the next retry. It deliberately retained the original BuyerRef, XML body, and, most importantly, the original `X-Request-Id` (`outcatch-v2-2-113038`). The scheduler later replayed that exact request after the backoff period.
+
+LegacySupply recognised the identical request ID and payload as an idempotent replay and returned the acknowledgement for the already-created `PO-100226`. The adapter then saved that PO number locally and changed the local status to the acknowledgement status. It did not create a second order because it never generated a new request ID or changed the request content between attempts. If the request ID had changed, the retry would have been a distinct supplier order and could have created a duplicate.
 
 ---
 
-## Live Self-Check Checklist (`https://legacysupply.onrender.com/verify`)
+## Question 3
 
-| Key | Self-Check Requirement | Status | Live Evidence / Details |
-| :--- | :--- | :--- | :--- |
-| `auth` | Signed in to LegacySupply | **MET** | 5 successful sign-ins recorded |
-| `catalog` | Read the catalog | **MET** | 1 catalog read (`ZTY-3082`, `ZTY-8985`, `ZTY-1364`) |
-| `pos` | Placed at least 3 purchase orders | **MET** | 3 purchase orders on file (`PO-100048`, `PO-100049`, `PO-100050`) |
-| `session` | Renews expired sessions | **MET** | Token caching & reactive 401 renewal logic verified |
-| `reqid` | Sends X-Request-Id on every order | **MET** | 3 of 3 order requests transmitted with stable UUID headers |
-| `nodup` | No duplicate orders | **MET** | 0 duplicate orders, 0 chaos events |
-| `cancelled` | Noticed a cancelled order | **MET** | 1 cancelled order seen (`PO-100050` returned StatusCode 90) |
-| `polite` | Polls without hitting the rate limit | **MET** | 24 status checks, 0 rate-limited |
+### `PO-100050` (BuyerRef `RO-P300-01`) ended with StatusCode 90, which is not in the documentation. How did you work out what it means, and what does your system now do with the stock that will never arrive?
+
+I identified the code by tracking `PO-100050` with `GET /purchase-orders/PO-100050`. The returned XML contained `<StatusCode>90</StatusCode>`. The published manual lists only the normal lifecycle codes 10 (Accepted), 20 (Picking), 30 (Shipped), and 40 (Delivered), so 90 had to be interpreted from the observed terminal behaviour: it represented a cancelled or unfulfillable supplier order rather than a delayed delivery.
+
+The ACL maps both `90` and `50` to the internal `CANCELLED` status in `SupplierOrderStatus`. Cancelled orders are excluded from the scheduler's active-status query, so they are no longer polled. The delivery event is published only for a transition to `DELIVERED` (status 40), so no `SupplierOrderDeliveredEvent` is emitted for `PO-100050` and no inventory is restocked for stock that will not arrive. The product remains low or out of stock until a later, separate replenishment order is placed.

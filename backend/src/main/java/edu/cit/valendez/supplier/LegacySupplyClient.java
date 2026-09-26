@@ -90,6 +90,25 @@ class LegacySupplyClient {
         }
     }
 
+    /**
+     * Checks the unauthenticated supplier health endpoint.  This does not
+     * create a session or affect purchase-order traffic.
+     */
+    public boolean isAvailable() {
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(sessionManager.getBaseUrl() + "/ping"))
+                    .timeout(TIMEOUT)
+                    .header("Accept", "application/xml")
+                    .GET()
+                    .build();
+            return httpClient.send(request, HttpResponse.BodyHandlers.discarding()).statusCode() == 200;
+        } catch (Exception e) {
+            log.warn("[LegacySupply] Availability check failed: {}", e.getMessage());
+            return false;
+        }
+    }
+
     @FunctionalInterface
     private interface SessionAction<T> {
         T execute(String sessionToken) throws Exception;

@@ -8,8 +8,10 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.OffsetDateTime;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -21,6 +23,12 @@ import java.util.stream.Collectors;
 class SupplierGatewayImpl implements SupplierGateway {
 
     private static final Logger log = LoggerFactory.getLogger(SupplierGatewayImpl.class);
+    private static final List<SupplierOrderStatus> OPEN_ORDER_STATUSES = List.of(
+            SupplierOrderStatus.PENDING,
+            SupplierOrderStatus.ACCEPTED,
+            SupplierOrderStatus.PICKING,
+            SupplierOrderStatus.SHIPPED
+    );
 
     private final SupplierOrderRepository repository;
     private final SupplierProductMapper productMapper;
@@ -44,15 +52,25 @@ class SupplierGatewayImpl implements SupplierGateway {
             throw new IllegalArgumentException("Product ID cannot be null or empty");
         }
 
-        SupplierProductMapper.ProductMapping mapping = productMapper.getMapping(productId);
-        int cases = productMapper.calculateCases(productId, targetQuantity);
+        String cleanProductId = productId.trim();
+        Optional<SupplierOrder> existingOpenOrder = repository
+                .findFirstByProductIdAndStatusInOrderByCreatedAtDesc(cleanProductId, OPEN_ORDER_STATUSES);
+        if (existingOpenOrder.isPresent()) {
+            SupplierOrder existing = existingOpenOrder.get();
+            log.info("[ACL Supplier] Reusing open replenishment order {} for product {} to prevent a duplicate.",
+                    existing.getId(), cleanProductId);
+            return toDto(existing);
+        }
+
+        SupplierProductMapper.ProductMapping mapping = productMapper.getMapping(cleanProductId);
+        int cases = productMapper.calculateCases(cleanProductId, targetQuantity);
         int totalUnits = cases * mapping.getPackSize();
 
         String requestId = UUID.randomUUID().toString();
         String tempRef = "RO-TEMP-" + UUID.randomUUID().toString().substring(0, 8);
 
         SupplierOrder order = new SupplierOrder(
-                productId.trim(),
+                cleanProductId,
                 tempRef,
                 requestId,
                 mapping.getSupplierSku(),
@@ -91,8 +109,10 @@ class SupplierGatewayImpl implements SupplierGateway {
 
         for (SupplierOrder order : activeOrders) {
             if (order.getStatus() == SupplierOrderStatus.PENDING && order.getPoNumber() == null) {
-                // Pending submission - retry placement
-                if (order.getRetryCount() < 3) {
+                // A 503/timeout may last longer than a few scheduler cycles.
+                // Keep the durable order pending and replay its original,
+                // idempotent request after backoff until it is accepted.
+                if (order.isReadyForRetry(OffsetDateTime.now())) {
                     processOrderPlacement(order);
                     repository.save(order);
                 }
@@ -143,6 +163,7 @@ class SupplierGatewayImpl implements SupplierGateway {
             SupplierOrderStatus status = SupplierOrderStatus.fromStatusCode(ack.getStatusCode());
             order.setStatus(status);
             order.setFailureReason(null);
+            order.clearRetrySchedule();
             log.info("[ACL Supplier] Order acknowledged by LegacySupply. PO: {}, Status: {}", ack.getPoNumber(), status);
 
             if (status == SupplierOrderStatus.DELIVERED) {
@@ -156,14 +177,31 @@ class SupplierGatewayImpl implements SupplierGateway {
             order.incrementRetryCount();
             order.setFailureReason("[" + e.getErrorCode() + "] " + e.getMessage());
             
-            // Mark as FAILED if unrecoverable client error (e.g. 422 invalid SKU)
-            if ("E-SKU-02".equals(e.getErrorCode()) || "E-QTY-11".equals(e.getErrorCode())) {
+            // Do not retry malformed or contradictory requests.  Availability,
+            // rate-limit, and transport errors remain PENDING for safe replay.
+            if (isPermanentOrderError(e.getErrorCode())) {
                 order.setStatus(SupplierOrderStatus.FAILED);
+                order.clearRetrySchedule();
             } else {
                 order.setStatus(SupplierOrderStatus.PENDING);
+                order.scheduleRetry(OffsetDateTime.now());
             }
             log.warn("[ACL Supplier] Order placement failed (attempt {}): {}", order.getRetryCount(), e.getMessage());
         }
+    }
+
+    @Override
+    public boolean isSupplierAvailable() {
+        return legacySupplyClient.isAvailable();
+    }
+
+    private boolean isPermanentOrderError(String errorCode) {
+        return "E-SKU-02".equals(errorCode)
+                || "E-QTY-11".equals(errorCode)
+                || "E-REF-05".equals(errorCode)
+                || "E-IDEM-04".equals(errorCode)
+                || "E-FMT-01".equals(errorCode)
+                || "E-FMT-02".equals(errorCode);
     }
 
     private SupplierOrderDto toDto(SupplierOrder entity) {

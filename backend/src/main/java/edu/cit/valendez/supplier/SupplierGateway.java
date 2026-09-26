@@ -20,5 +20,10 @@ public interface SupplierGateway {
      * Triggers background synchronization of open supplier orders with LegacySupply.
      */
     void syncOrderStatus();
+
+    /**
+     * Reports whether the LegacySupply health endpoint is currently reachable.
+     */
+    boolean isSupplierAvailable();
 }
 

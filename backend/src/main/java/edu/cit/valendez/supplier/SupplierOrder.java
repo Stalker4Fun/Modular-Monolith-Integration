@@ -1,6 +1,7 @@
 package edu.cit.valendez.supplier;
 
 import jakarta.persistence.*;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 
 @Entity
@@ -41,6 +42,13 @@ class SupplierOrder {
 
     @Column(name = "retry_count", nullable = false)
     private int retryCount = 0;
+
+    /**
+     * The earliest time a transiently failed submission may be replayed.  This
+     * is persisted so a restart cannot turn a supplier outage into a lost PO.
+     */
+    @Column(name = "next_retry_at")
+    private OffsetDateTime nextRetryAt;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;
@@ -154,6 +162,26 @@ class SupplierOrder {
 
     public void incrementRetryCount() {
         this.retryCount++;
+    }
+
+    public OffsetDateTime getNextRetryAt() {
+        return nextRetryAt;
+    }
+
+    public void scheduleRetry(OffsetDateTime now) {
+        // 15s, 30s, 60s ... capped at five minutes.  This stays comfortably
+        // below the supplier's polling quota during an extended outage.
+        int exponent = Math.min(Math.max(retryCount - 1, 0), 5);
+        long delaySeconds = Math.min(15L * (1L << exponent), Duration.ofMinutes(5).toSeconds());
+        this.nextRetryAt = now.plusSeconds(delaySeconds);
+    }
+
+    public boolean isReadyForRetry(OffsetDateTime now) {
+        return nextRetryAt == null || !nextRetryAt.isAfter(now);
+    }
+
+    public void clearRetrySchedule() {
+        this.nextRetryAt = null;
     }
 
     public OffsetDateTime getCreatedAt() {

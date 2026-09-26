@@ -43,6 +43,7 @@ button { cursor: pointer; }
 .connection { align-items: center; background: rgb(8 16 43 / 25%); display: inline-flex; gap: .42rem; }
 .connection-dot { background: #ee9d36; border-radius: 50%; box-shadow: 0 0 0 3px rgb(238 157 54 / 18%); height: 7px; width: 7px; }
 .connection.online .connection-dot { background: #45dc92; box-shadow: 0 0 0 3px rgb(69 220 146 / 18%); }
+.connection.offline .connection-dot { background: #ff6976; box-shadow: 0 0 0 3px rgb(255 105 118 / 18%); }
 
 .hero-layout { align-items: end; display: grid; gap: 2rem; grid-template-columns: 1.1fr .9fr; margin-top: 2.5rem; }
 .eyebrow, .section-kicker { color: #b6c9ff; display: block; font-size: .69rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
@@ -66,6 +67,7 @@ button { cursor: pointer; }
 .panel h3 { color: #22315e; font-size: .96rem; margin: 0; }
 .panel-heading, .feed-heading { align-items: start; display: flex; gap: 1rem; justify-content: space-between; margin-bottom: 1rem; }
 .panel-heading p { color: #68758b; margin: 0; }
+.supplier-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .55rem; justify-content: flex-end; }
 .section-kicker { color: #5870be; }
 .feed-heading { align-items: center; }
 .count-chip { background: #edf2ff; color: #3c57b5; min-width: 30px; text-align: center; }
@@ -131,6 +133,8 @@ tbody tr:hover { background: #f6f8ff; }
 .status.confirmed { background: #e3f8ec; color: #0d7040; }
 .status.rejected { background: #ffe0e0; color: #9f2631; }
 .status.cancelled { background: #e4ebff; color: #354ca6; }
+.status.available { background: #e3f8ec; color: #0d7040; }
+.status.outage { background: #ffe0e0; color: #9f2631; }
 .notification-list li { display: grid; gap: .7rem; grid-template-columns: 8px 1fr; }
 .notification-marker { background: linear-gradient(#5c81ea, #8da8ff); border-radius: 99px; margin: .18rem 0; min-height: 29px; }
 .notification-list p { line-height: 1.43; margin: 0 0 .3rem; }

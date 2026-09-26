@@ -24,13 +24,15 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [apiConnected, setApiConnected] = useState(false);
+  const [supplierAvailable, setSupplierAvailable] = useState(null);
 
   const refreshDashboard = async () => {
-    const [inventoryResult, ordersResult, notificationsResult, supplierResult] = await Promise.allSettled([
+    const [inventoryResult, ordersResult, notificationsResult, supplierResult, availabilityResult] = await Promise.allSettled([
       getJson('/api/inventory'),
       getJson('/api/orders'),
       getJson('/api/notifications'),
       getJson('/api/supplier/orders'),
+      getJson('/api/supplier/availability'),
     ]);
 
     if (inventoryResult.status === 'fulfilled') {
@@ -42,10 +44,15 @@ export default function App() {
     if (ordersResult.status === 'fulfilled') setOrders(ordersResult.value);
     if (notificationsResult.status === 'fulfilled') setNotifications(notificationsResult.value);
     if (supplierResult.status === 'fulfilled') setSupplierOrders(supplierResult.value);
+    setSupplierAvailable(availabilityResult.status === 'fulfilled'
+      ? availabilityResult.value.available
+      : false);
   };
 
   useEffect(() => {
     refreshDashboard();
+    const statusRefresh = window.setInterval(refreshDashboard, 30000);
+    return () => window.clearInterval(statusRefresh);
   }, []);
 
   const addToCart = () => {
@@ -162,6 +169,11 @@ export default function App() {
           </div>
           <span className={`connection ${apiConnected ? 'online' : 'offline'}`}>
             <span className="connection-dot" />{apiConnected ? 'Backend connected' : 'Backend unavailable'}
+          </span>
+          <span className={`connection ${supplierAvailable === true ? 'online' : supplierAvailable === false ? 'offline' : 'checking'}`}>
+            <span className="connection-dot" />{supplierAvailable === true
+              ? 'LegacySupply available'
+              : supplierAvailable === false ? 'LegacySupply outage' : 'Checking LegacySupply'}
           </span>
         </div>
         <div className="hero-layout">
@@ -287,7 +299,12 @@ export default function App() {
             <h2>LegacySupply Purchase Orders</h2>
             <p>Track external replenishment purchase orders, XML transmissions, and delivery restocks.</p>
           </div>
-          <button type="button" className="button secondary compact" onClick={syncSupplierOrders} disabled={loading}>Sync Status</button>
+          <div className="supplier-actions">
+            <span className={`status ${supplierAvailable === true ? 'available' : 'outage'}`}>
+              {supplierAvailable === true ? 'Supplier online' : 'Supplier unavailable'}
+            </span>
+            <button type="button" className="button secondary compact" onClick={syncSupplierOrders} disabled={loading}>Sync Status</button>
+          </div>
         </div>
         <div className="table-wrap">
           {!supplierOrders.length && <p className="empty-copy">No supplier orders placed yet. Reorders trigger automatically when stock falls below 5.</p>}

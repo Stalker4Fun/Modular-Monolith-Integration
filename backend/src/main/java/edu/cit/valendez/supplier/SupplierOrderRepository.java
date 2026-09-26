@@ -10,6 +10,8 @@ import java.util.Optional;
 interface SupplierOrderRepository extends JpaRepository<SupplierOrder, Long> {
     List<SupplierOrder> findByStatusIn(List<SupplierOrderStatus> statuses);
     List<SupplierOrder> findByStatus(SupplierOrderStatus status);
+    Optional<SupplierOrder> findFirstByProductIdAndStatusInOrderByCreatedAtDesc(
+            String productId, List<SupplierOrderStatus> statuses);
     Optional<SupplierOrder> findByBuyerRef(String buyerRef);
     Optional<SupplierOrder> findByPoNumber(String poNumber);
 }

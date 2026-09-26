@@ -2,7 +2,7 @@
 
 **Student ID**: `21-3360-213`  
 **Base URL**: `https://legacysupply.onrender.com/api/v1`  
-**Status**: **100% Empirically Verified & Passed on LegacySupply Self-Check**  
+LegacySupply Self-Check**  
 
 ---
 
@@ -79,8 +79,8 @@ $$\text{Cases} = \left\lceil \frac{\text{Target Units}}{\text{PackSize}} \right\
 - **Strict Timeout Control**:
   - All HTTP requests to LegacySupply enforce a strict 3-second timeout (`Duration.ofSeconds(3)`).
 - **Retry Mechanism**:
-  - Unsuccessful requests (e.g. network failure, 503 service unavailable, rate limiting) record an increased `retry_count` and retain status `PENDING`.
-  - An `@Scheduled` background job (`SupplierOrderScheduler`) retries `PENDING` orders (up to 3 max retries) using the exact same `X-Request-Id` and `BuyerRef`.
+- Unsuccessful transient requests (e.g. network failure, 503 service unavailable, rate limiting) record an increased `retry_count`, a persisted `next_retry_at`, and retain status `PENDING`.
+- An `@Scheduled` background job (`SupplierOrderScheduler`) retries `PENDING` orders after exponential backoff (15 seconds through a five-minute cap) using the exact same `X-Request-Id` and `BuyerRef` until LegacySupply accepts them. Malformed or contradictory requests are marked `FAILED` instead.
 
 ---
 
@@ -108,6 +108,7 @@ CREATE TABLE supplier_orders (
     status VARCHAR(30) NOT NULL,
     failure_reason VARCHAR(500),
     retry_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
