@@ -67,6 +67,11 @@ class InventoryServiceImpl implements InventoryService {
         item.setStock(item.getStock() - quantity);
         InventoryItem savedItem = inventoryRepository.save(item);
 
+        // Publish stock changed domain event
+        eventPublisher.publishEvent(new edu.cit.valendez.events.StockChangedEvent(
+                savedItem.getProductId(), savedItem.getStock()
+        ));
+
         // Low-stock auto-reorder rule: publish LowStockEvent if remaining stock drops below threshold (5)
         if (savedItem.getStock() < LOW_STOCK_THRESHOLD) {
             eventPublisher.publishEvent(new LowStockEvent(
@@ -98,6 +103,11 @@ class InventoryServiceImpl implements InventoryService {
         InventoryItem item = optionalItem.get();
         item.setStock(item.getStock() + quantity);
         InventoryItem savedItem = inventoryRepository.save(item);
+
+        // Publish stock changed domain event
+        eventPublisher.publishEvent(new edu.cit.valendez.events.StockChangedEvent(
+                savedItem.getProductId(), savedItem.getStock()
+        ));
 
         return ReservationResult.confirmed(toDto(savedItem));
     }

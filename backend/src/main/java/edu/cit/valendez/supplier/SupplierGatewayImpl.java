@@ -130,9 +130,14 @@ class SupplierGatewayImpl implements SupplierGateway {
                         order.setStatus(newStatus);
                         
                         if (newStatus == SupplierOrderStatus.DELIVERED) {
-                            log.info("[ACL Supplier] Order {} delivered. Publishing SupplierOrderDeliveredEvent for product {} ({} units)",
+                            log.info("[ACL Supplier] Order {} delivered. Publishing SupplierOrderDeliveredEvent & DeliveryReceivedEvent for product {} ({} units)",
                                     order.getPoNumber(), order.getProductId(), order.getUnits());
                             eventPublisher.publishEvent(new SupplierOrderDeliveredEvent(
+                                    order.getProductId(),
+                                    order.getUnits(),
+                                    order.getPoNumber()
+                            ));
+                            eventPublisher.publishEvent(new edu.cit.valendez.events.DeliveryReceivedEvent(
                                     order.getProductId(),
                                     order.getUnits(),
                                     order.getPoNumber()
@@ -172,6 +177,11 @@ class SupplierGatewayImpl implements SupplierGateway {
                         order.getUnits(),
                         order.getPoNumber()
                 ));
+                eventPublisher.publishEvent(new edu.cit.valendez.events.DeliveryReceivedEvent(
+                        order.getProductId(),
+                        order.getUnits(),
+                        order.getPoNumber()
+                ));
             }
         } catch (LegacySupplyException e) {
             order.incrementRetryCount();
@@ -193,6 +203,15 @@ class SupplierGatewayImpl implements SupplierGateway {
     @Override
     public boolean isSupplierAvailable() {
         return legacySupplyClient.isAvailable();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean hasOpenSupplierOrder(String productId) {
+        if (productId == null || productId.trim().isEmpty()) {
+            return false;
+        }
+        return repository.findFirstByProductIdAndStatusInOrderByCreatedAtDesc(productId.trim(), OPEN_ORDER_STATUSES).isPresent();
     }
 
     private boolean isPermanentOrderError(String errorCode) {

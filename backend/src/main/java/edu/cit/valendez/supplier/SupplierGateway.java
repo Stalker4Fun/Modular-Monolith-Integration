@@ -25,5 +25,10 @@ public interface SupplierGateway {
      * Reports whether the LegacySupply health endpoint is currently reachable.
      */
     boolean isSupplierAvailable();
+
+    /**
+     * Checks if there is an active/open supplier purchase order pending delivery for a product.
+     */
+    boolean hasOpenSupplierOrder(String productId);
 }
 

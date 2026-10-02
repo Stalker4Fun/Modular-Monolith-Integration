@@ -79,11 +79,16 @@ class LegacySupplySessionManager {
             XmlAuthRequest authReq = new XmlAuthRequest(clientId, keyToUse);
             String xmlBody = xmlMapper.writeValueAsString(authReq);
 
+            String clientInstanceUuid = java.util.UUID.nameUUIDFromBytes(("instance-" + clientId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(baseUrl + "/auth/token"))
                     .timeout(TIMEOUT)
                     .header("Content-Type", "application/xml")
                     .header("Accept", "application/xml")
+                    .header("X-Client-Id", clientId)
+                    .header("X-Client-Instance", clientInstanceUuid)
+                    .header("X-Instance-ID", clientId)
                     .POST(HttpRequest.BodyPublishers.ofString(xmlBody))
                     .build();
 

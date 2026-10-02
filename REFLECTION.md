@@ -39,3 +39,41 @@ LegacySupply recognised the identical request ID and payload as an idempotent re
 I identified the code by tracking `PO-100050` with `GET /purchase-orders/PO-100050`. The returned XML contained `<StatusCode>90</StatusCode>`. The published manual lists only the normal lifecycle codes 10 (Accepted), 20 (Picking), 30 (Shipped), and 40 (Delivered), so 90 had to be interpreted from the observed terminal behaviour: it represented a cancelled or unfulfillable supplier order rather than a delayed delivery.
 
 The ACL maps both `90` and `50` to the internal `CANCELLED` status in `SupplierOrderStatus`. Cancelled orders are excluded from the scheduler's active-status query, so they are no longer polled. The delivery event is published only for a transition to `DELIVERED` (status 40), so no `SupplierOrderDeliveredEvent` is emitted for `PO-100050` and no inventory is restocked for stock that will not arrive. The product remains low or out of stock until a later, separate replenishment order is placed.
+
+---
+
+# Lab 4 Reflection — Tiangge Marketplace Integration
+
+**Student ID**: `21-3360-213`  
+**Instance ID**: `21-3360-213`  
+**Reflection date**: October 2, 2026
+
+---
+
+## Question 1
+
+### Tiangge order TG-T3EG8Y (1 x P200) was accepted at 10:20:15. At that moment your last published stock for P200 was 0, and the stock Tiangge worked out from your own decisions, cancellations and deliveries was 0. Where did your application's stock figure come from, and why did it disagree?
+
+The stock figure evaluated by the decision engine came directly from the local inventory domain service (`InventoryService.getItem("P200").getStock()`), which queries the application's local `inventory` database table initialized during startup via `schema.sql` (where P200 has an initial balance of 25 units).
+
+The local stock figure disagreed with Tiangge's calculated stock figure because Tiangge tracks available stock strictly based on stream accounting of historical stock publications (`PUT /stock`) and order decisions (`ACCEPTED` order reservations, `CANCELLED` order restocks). Before the application performs a bulk stock synchronization or pushes updated stock levels via `StockChangedEvent`, the internal domain logic evaluates order feasibility against local database balances. Because the local database contained unreserved stock units from schema initialization, the decision engine successfully reserved 1 unit of P200 and issued an `ACCEPTED` decision even though Tiangge's remote stream ledger calculated 0 units based solely on prior API traffic.
+
+---
+
+## Question 2
+
+### Event evt_ce1d16b09b9df15b (order TG-8F79RG) reached your application twice, as seq 1 and seq 2, and you processed it once. Show the code and the stored data that made the second delivery harmless, and explain what would happen if your application restarted between the two.
+
+The second delivery was rendered harmless by the deduplication check in `TianggeFeedReaderService.java` (`tianggeOrderRepository.existsByTianggeOrderId(orderId)`) backed by the database UNIQUE constraint on `tiangge_order_id` in the `tiangge_orders` table (`tiangge_order_id VARCHAR(64) UNIQUE NOT NULL`). Upon processing `seq 1`, the order `TG-8F79RG` was persisted to `tiangge_orders` with status `ACCEPTED`. When `seq 2` arrived, `TianggeFeedReaderService` detected that `existsByTianggeOrderId("TG-8F79RG")` returned `true`, logged the duplicate, advanced the cursor to `seq 2` via `FeedCursorService.updateCursor(2L)`, and skipped re-evaluating or double-reserving stock.
+
+If the application had restarted between `seq 1` and `seq 2`, `FeedCursorService` would load `last_event_id = 1` from the stored `feed_cursor` table on startup. The feed reader would request `GET /feed?after=1` and receive `seq 2`. Because the order record `TG-8F79RG` remains safely persisted in `tiangge_orders`, the restarted instance would still detect the existing record, skip re-processing, update the cursor to `seq 2`, and maintain idempotent operation without double-reserving inventory.
+
+---
+
+## Question 3
+
+### During your restart test your application was down for about 310 seconds while 8 orders arrived. How did the restarted application find those orders, and how did it avoid handling earlier ones again?
+
+When the restarted application initialized, `TianggeStartupService` triggered feed polling using `FeedCursorService.getCurrentCursor()`, which retrieved the persistent sequence position `last_event_id` stored in the `feed_cursor` database table right before shutdown. The `TianggeClient` passed this cursor as the `after` query parameter in `GET /tiangge/v1/feed?after={last_event_id}&limit=50`. Because the Tiangge API feed uses monotonic sequence numbers (`seq`), passing `after={last_event_id}` instructed the server to return only the batch of 8 unread events generated during the 310-second downtime.
+
+The application avoided re-handling earlier orders through a two-layered defense: first, the `?after` parameter filtered out all sequence numbers less than or equal to `last_event_id` at the API boundary; second, the feed processor sorted the incoming batch by `seq` ascending, checked `tianggeOrderRepository.existsByTianggeOrderId(orderId)`, and updated `feed_cursor` sequentially after each item. Any previously decided order was recognized by the `tiangge_orders` database constraint and skipped cleanly without re-executing stock reservations or decision calls.

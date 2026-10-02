@@ -5,6 +5,8 @@
 
 BEGIN;
 
+DROP TABLE IF EXISTS tiangge_orders;
+DROP TABLE IF EXISTS feed_cursor;
 DROP TABLE IF EXISTS supplier_orders;
 DROP TABLE IF EXISTS notifications;
 DROP TABLE IF EXISTS order_items;
@@ -64,10 +66,33 @@ CREATE TABLE supplier_orders (
 CREATE INDEX idx_supplier_orders_status ON supplier_orders(status);
 CREATE INDEX idx_supplier_orders_buyer_ref ON supplier_orders(buyer_ref);
 
+CREATE TABLE feed_cursor (
+    id BIGINT PRIMARY KEY,
+    last_event_id BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE tiangge_orders (
+    id BIGSERIAL PRIMARY KEY,
+    tiangge_order_id VARCHAR(100) NOT NULL UNIQUE,
+    product_id VARCHAR(50) NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    status VARCHAR(50) NOT NULL,
+    reason VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_tiangge_orders_status ON tiangge_orders(status);
+CREATE INDEX idx_tiangge_orders_product_id ON tiangge_orders(product_id);
+
 INSERT INTO inventory (product_id, name, stock) VALUES
     ('P100', 'Wireless Mouse', 25),
     ('P200', 'Mechanical Keyboard', 10),
     ('P300', 'USB-C Hub', 0);
 
+INSERT INTO feed_cursor (id, last_event_id) VALUES (1, 0);
+
 COMMIT;
+
 

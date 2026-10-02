@@ -33,14 +33,23 @@ class LegacySupplyClient {
         this.xmlMapper = new XmlMapper();
     }
 
+    private HttpRequest.Builder createRequestBuilder(String url) {
+        String clientId = sessionManager.getClientId();
+        String clientInstanceUuid = java.util.UUID.nameUUIDFromBytes(("instance-" + clientId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        return HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(TIMEOUT)
+                .header("X-Client-Id", clientId)
+                .header("X-Client-Instance", clientInstanceUuid)
+                .header("X-Instance-ID", clientId);
+    }
+
     public XmlPurchaseOrderAck placeOrder(String supplierSku, int qty, String buyerRef, String requestId) throws LegacySupplyException {
         XmlPurchaseOrder poReq = new XmlPurchaseOrder(supplierSku, qty, buyerRef);
         try {
             String xmlBody = xmlMapper.writeValueAsString(poReq);
             return executeWithSession((sessionToken) -> {
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(sessionManager.getBaseUrl() + "/purchase-orders"))
-                        .timeout(TIMEOUT)
+                HttpRequest request = createRequestBuilder(sessionManager.getBaseUrl() + "/purchase-orders")
                         .header("Content-Type", "application/xml")
                         .header("Accept", "application/xml")
                         .header("X-LS-Session", sessionToken)
@@ -68,9 +77,7 @@ class LegacySupplyClient {
     public XmlPurchaseOrderStatus getOrderStatus(String poNumber) throws LegacySupplyException {
         try {
             return executeWithSession((sessionToken) -> {
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(sessionManager.getBaseUrl() + "/purchase-orders/" + poNumber))
-                        .timeout(TIMEOUT)
+                HttpRequest request = createRequestBuilder(sessionManager.getBaseUrl() + "/purchase-orders/" + poNumber)
                         .header("Accept", "application/xml")
                         .header("X-LS-Session", sessionToken)
                         .GET()
@@ -96,9 +103,7 @@ class LegacySupplyClient {
      */
     public boolean isAvailable() {
         try {
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(sessionManager.getBaseUrl() + "/ping"))
-                    .timeout(TIMEOUT)
+            HttpRequest request = createRequestBuilder(sessionManager.getBaseUrl() + "/ping")
                     .header("Accept", "application/xml")
                     .GET()
                     .build();
